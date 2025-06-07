@@ -9,7 +9,6 @@ import {
   ListItem,
   ListItemText,
   Paper,
-  Chip
 } from '@mui/material';
 import imageCompression from 'browser-image-compression';
 import JSZip from 'jszip';
