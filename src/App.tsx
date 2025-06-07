@@ -8,7 +8,8 @@ import {
   List,
   ListItem,
   ListItemText,
-  Paper
+  Paper,
+  Chip
 } from '@mui/material';
 import imageCompression from 'browser-image-compression';
 import JSZip from 'jszip';
@@ -18,18 +19,45 @@ interface ProcessedFile {
   originalSize: number;
   compressedSize: number;
   isCompressed: boolean;
+  folderName: string;
+}
+
+interface FolderData {
+  name: string;
+  files: File[];
+  processedFiles: ProcessedFile[];
 }
 
 function App() {
-  const [files, setFiles] = useState<File[]>([]);
-  const [processedFiles, setProcessedFiles] = useState<ProcessedFile[]>([]);
+  const [folders, setFolders] = useState<FolderData[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingStatus, setProcessingStatus] = useState<string[]>([]);
 
   const handleFolderUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const uploadedFiles = Array.from(event.target.files || []);
-    setFiles(uploadedFiles);
-    setProcessedFiles([]);
+    
+    // フォルダごとにファイルをグループ化
+    const folderMap = new Map<string, File[]>();
+    
+    uploadedFiles.forEach(file => {
+      // ファイルパスからフォルダ名を取得
+      const pathParts = file.webkitRelativePath.split('/');
+      const folderName = pathParts[0];
+      
+      if (!folderMap.has(folderName)) {
+        folderMap.set(folderName, []);
+      }
+      folderMap.get(folderName)?.push(file);
+    });
+
+    // フォルダデータを作成
+    const newFolders: FolderData[] = Array.from(folderMap.entries()).map(([name, files]) => ({
+      name,
+      files,
+      processedFiles: []
+    }));
+
+    setFolders(prev => [...prev, ...newFolders]);
     setProcessingStatus([]);
   };
 
@@ -62,7 +90,7 @@ function App() {
     });
   };
 
-  const compressImage = async (file: File): Promise<ProcessedFile> => {
+  const compressImage = async (file: File, folderName: string): Promise<ProcessedFile> => {
     const originalSize = file.size;
     let currentFile = file;
 
@@ -78,7 +106,8 @@ function App() {
           file: currentFile,
           originalSize,
           compressedSize: currentFile.size,
-          isCompressed: false
+          isCompressed: false,
+          folderName
         };
       }
 
@@ -97,7 +126,7 @@ function App() {
 
         try {
           compressedFile = await imageCompression(currentFile, options);
-          quality -= 0.2; // 品質を下げて再試行
+          quality -= 0.2;
           attempts++;
         } catch (error) {
           console.error('Error compressing image:', error);
@@ -109,50 +138,70 @@ function App() {
         file: compressedFile,
         originalSize,
         compressedSize: compressedFile.size,
-        isCompressed: true
+        isCompressed: true,
+        folderName
       };
     }
 
-    // 画像以外のファイルはそのまま返す
     return {
       file: currentFile,
       originalSize,
       compressedSize: currentFile.size,
-      isCompressed: false
+      isCompressed: false,
+      folderName
     };
   };
 
   const processFiles = async () => {
     setIsProcessing(true);
     setProcessingStatus([]);
-    const processed: ProcessedFile[] = [];
 
-    for (const file of files) {
-      setProcessingStatus(prev => [...prev, `Processing ${file.name}...`]);
-      const result = await compressImage(file);
-      processed.push(result);
-      setProcessingStatus(prev => [
-        ...prev, 
-        `Completed ${file.name} (${(result.originalSize / 1024).toFixed(2)}KB → ${(result.compressedSize / 1024).toFixed(2)}KB)`
-      ]);
+    for (let i = 0; i < folders.length; i++) {
+      const folder = folders[i];
+      setProcessingStatus(prev => [...prev, `Processing folder: ${folder.name}`]);
+      
+      const processed: ProcessedFile[] = [];
+      for (const file of folder.files) {
+        setProcessingStatus(prev => [...prev, `Processing ${file.name}...`]);
+        const result = await compressImage(file, folder.name);
+        processed.push(result);
+        setProcessingStatus(prev => [
+          ...prev, 
+          `Completed ${file.name} (${(result.originalSize / 1024).toFixed(2)}KB → ${(result.compressedSize / 1024).toFixed(2)}KB)`
+        ]);
+      }
+
+      setFolders(prev => {
+        const newFolders = [...prev];
+        newFolders[i] = { ...newFolders[i], processedFiles: processed };
+        return newFolders;
+      });
     }
 
-    setProcessedFiles(processed);
     setIsProcessing(false);
   };
 
   const downloadProcessedFiles = async () => {
     const zip = new JSZip();
     
-    processedFiles.forEach(({ file }) => {
-      zip.file(file.name, file);
+    folders.forEach(folder => {
+      const folderZip = zip.folder(folder.name);
+      if (folderZip) {
+        folder.processedFiles.forEach(({ file }) => {
+          folderZip.file(file.name, file);
+        });
+      }
     });
 
     const content = await zip.generateAsync({ type: 'blob' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(content);
-    link.download = 'processed_files.zip';
+    link.download = 'processed_folders.zip';
     link.click();
+  };
+
+  const removeFolder = (index: number) => {
+    setFolders(prev => prev.filter((_, i) => i !== index));
   };
 
   return (
@@ -176,20 +225,30 @@ function App() {
           />
           <label htmlFor="folder-upload">
             <Button variant="contained" component="span">
-              Select Folder
+              Select Folders
             </Button>
           </label>
         </Box>
 
-        {files.length > 0 && (
+        {folders.length > 0 && (
           <Box sx={{ my: 2 }}>
-            <Typography variant="h6">Selected Files:</Typography>
+            <Typography variant="h6">Selected Folders:</Typography>
             <List>
-              {files.map((file, index) => (
-                <ListItem key={index}>
+              {folders.map((folder, index) => (
+                <ListItem 
+                  key={index}
+                  secondaryAction={
+                    <Button 
+                      color="error" 
+                      onClick={() => removeFolder(index)}
+                    >
+                      Remove
+                    </Button>
+                  }
+                >
                   <ListItemText 
-                    primary={file.name}
-                    secondary={`${(file.size / 1024).toFixed(2)} KB`}
+                    primary={folder.name}
+                    secondary={`${folder.files.length} files`}
                   />
                 </ListItem>
               ))}
@@ -197,7 +256,7 @@ function App() {
           </Box>
         )}
 
-        {files.length > 0 && !isProcessing && !processedFiles.length && (
+        {folders.length > 0 && !isProcessing && !folders.some(f => f.processedFiles.length > 0) && (
           <Button 
             variant="contained" 
             color="primary" 
@@ -227,23 +286,30 @@ function App() {
           </Paper>
         )}
 
-        {processedFiles.length > 0 && (
+        {folders.some(f => f.processedFiles.length > 0) && (
           <Box sx={{ my: 2 }}>
             <Typography variant="h6">Processed Files:</Typography>
-            <List>
-              {processedFiles.map(({ file, originalSize, compressedSize, isCompressed }, index) => (
-                <ListItem key={index}>
-                  <ListItemText 
-                    primary={file.name}
-                    secondary={
-                      isCompressed 
-                        ? `Compressed: ${(originalSize / 1024).toFixed(2)}KB → ${(compressedSize / 1024).toFixed(2)}KB`
-                        : `Size: ${(compressedSize / 1024).toFixed(2)}KB`
-                    }
-                  />
-                </ListItem>
-              ))}
-            </List>
+            {folders.map((folder, folderIndex) => (
+              <Box key={folderIndex} sx={{ mb: 2 }}>
+                <Typography variant="subtitle1" sx={{ mt: 2, mb: 1 }}>
+                  {folder.name}
+                </Typography>
+                <List>
+                  {folder.processedFiles.map(({ file, originalSize, compressedSize, isCompressed }, index) => (
+                    <ListItem key={index}>
+                      <ListItemText 
+                        primary={file.name}
+                        secondary={
+                          isCompressed 
+                            ? `Compressed: ${(originalSize / 1024).toFixed(2)}KB → ${(compressedSize / 1024).toFixed(2)}KB`
+                            : `Size: ${(compressedSize / 1024).toFixed(2)}KB`
+                        }
+                      />
+                    </ListItem>
+                  ))}
+                </List>
+              </Box>
+            ))}
             <Button 
               variant="contained" 
               color="success" 
